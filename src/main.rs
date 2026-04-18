@@ -4,10 +4,18 @@ use std::{collections::HashMap, fmt};
 enum Player {
     Human {
         faction: Faction,
+        warheads: u32,
+        inddir: u32,
+        sufddir: u32,
+        sites: Vec<Site>,
     },
     Cpu {
         faction: Faction,
         hatreds: HashMap<Faction, u32>,
+        warheads: u32,
+        inddir: u32,
+        sufddir: u32,
+        sites: Vec<Site>,
     },
 }
 
@@ -18,6 +26,14 @@ impl Player {
             Human { .. } => 0,
             Cpu { hatreds, .. } => hatreds.values().sum(),
         }
+    }
+
+    fn present_sites(&self) -> impl Iterator<Item = &Site> {
+        let sites = match self {
+            Player::Human { sites, .. } => sites,
+            Player::Cpu { sites, .. } => sites,
+        };
+        sites.iter().filter(|site| !site.is_destroyed())
     }
 }
 
@@ -68,6 +84,7 @@ impl Faction {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
 enum City {
     NewYork,
     LosAngeles,
@@ -89,22 +106,50 @@ enum Site {
         owner: Faction,
         ident: City,
         location: Vec2,
+        hit_count: u8,
     },
     PowerPlant {
         owner: Faction,
         location: Vec2,
+        hit_count: u8,
     },
     SsTrac {
         owner: Faction,
         location: Vec2,
+        hit_count: u8,
     },
     Submarine {
         owner: Faction,
         location: Vec2,
+        hit_count: u8,
     },
 }
 
 impl Site {
+    fn max_hits(&self) -> u8 {
+        use Site::*;
+        match self {
+            City { .. } => 4,
+            PowerPlant { .. } => 2,
+            SsTrac { .. } => 2,
+            Submarine { .. } => 1,
+        }
+    }
+
+    fn hit_count(&self) -> u8 {
+        use Site::*;
+        *match self {
+            City { hit_count, .. } => hit_count,
+            PowerPlant { hit_count, .. } => hit_count,
+            SsTrac { hit_count, .. } => hit_count,
+            Submarine { hit_count, .. } => hit_count,
+        }
+    }
+
+    fn is_destroyed(&self) -> bool {
+        self.hit_count() >= self.max_hits()
+    }
+
     fn points(&self) -> u16 {
         use Site::*;
         match self {
