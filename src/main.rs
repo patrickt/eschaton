@@ -1,43 +1,16 @@
 use bevy::prelude::*;
 use std::{collections::HashMap, fmt};
 
-enum Player {
-    Human {
-        faction: Faction,
-        warheads: u32,
-        inddir: u32,
-        sufddir: u32,
-        sites: Vec<Site>,
-    },
-    Cpu {
-        faction: Faction,
-        hatreds: HashMap<Faction, u32>,
-        warheads: u32,
-        inddir: u32,
-        sufddir: u32,
-        sites: Vec<Site>,
-    },
-}
+#[derive(Component)]
+struct Human;
 
-impl Player {
-    fn total_hatred(&self) -> u32 {
-        use Player::*;
-        match self {
-            Human { .. } => 0,
-            Cpu { hatreds, .. } => hatreds.values().sum(),
-        }
-    }
+#[derive(Component)]
+struct Cpu;
 
-    fn present_sites(&self) -> impl Iterator<Item = &Site> {
-        let sites = match self {
-            Player::Human { sites, .. } => sites,
-            Player::Cpu { sites, .. } => sites,
-        };
-        sites.iter().filter(|site| !site.is_destroyed())
-    }
-}
+#[derive(Component)]
+struct Player;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug)]
 enum Faction {
     AmNat,
     SovWar,
@@ -47,45 +20,8 @@ enum Faction {
     IndPak,
 }
 
-impl fmt::Display for Faction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use Faction::*;
-        write!(
-            f,
-            "{}",
-            match self {
-                AmNat => "AMNAT",
-                SovWar => "SOVWAR",
-                RedChi => "REDCHI",
-                IrLibSyr => "IRLIBSYR",
-                SouthAf => "SOUTHAF",
-                IndPak => "INDPAK",
-            }
-        )
-    }
-}
-
-impl Faction {
-    fn available(&self) -> bool {
-        use Faction::*;
-        matches!(self, AmNat | SovWar | RedChi)
-    }
-
-    fn starting_megatons(&self) -> u16 {
-        use Faction::*;
-        match self {
-            AmNat => 400,
-            SovWar => 80,
-            RedChi => 325,
-            IrLibSyr => 300,
-            SouthAf => 300,
-            IndPak => 275,
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-enum City {
+#[derive(Component, Debug)]
+enum MaMa {
     NewYork,
     LosAngeles,
     Moscow,
@@ -100,112 +36,77 @@ enum City {
     Karachi,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Site {
-    City {
-        owner: Faction,
-        ident: City,
-        location: Vec2,
-        hit_count: u8,
-    },
-    PowerPlant {
-        owner: Faction,
-        location: Vec2,
-        hit_count: u8,
-    },
-    SsTrac {
-        owner: Faction,
-        location: Vec2,
-        hit_count: u8,
-    },
-    Submarine {
-        owner: Faction,
-        location: Vec2,
-        hit_count: u8,
-    },
+#[derive(Resource, Default)]
+struct TurnOrder {
+    current: usize,
+    players: Vec<Entity>,
 }
 
-impl Site {
-    fn max_hits(&self) -> u8 {
-        use Site::*;
-        match self {
-            City { .. } => 4,
-            PowerPlant { .. } => 2,
-            SsTrac { .. } => 2,
-            Submarine { .. } => 1,
-        }
-    }
+#[derive(Resource, Default)]
+struct Aggressions {
+    hatreds: Vec<(Entity, Entity)>,
+}
 
-    fn hit_count(&self) -> u8 {
-        use Site::*;
-        *match self {
-            City { hit_count, .. } => hit_count,
-            PowerPlant { hit_count, .. } => hit_count,
-            SsTrac { hit_count, .. } => hit_count,
-            Submarine { hit_count, .. } => hit_count,
-        }
-    }
+fn populate_players(mut commands: Commands) {
+    commands.spawn((Player, Human, Faction::AmNat));
+    commands.spawn((Player, Cpu, Faction::SovWar));
+    commands.spawn((Player, Cpu, Faction::RedChi));
+}
 
-    fn is_destroyed(&self) -> bool {
-        self.hit_count() >= self.max_hits()
-    }
+fn populate_mamas(mut commands: Commands) {
+    use Faction::*;
+    use MaMa::*;
+    commands.spawn_batch([
+        (NewYork, AmNat),
+        (LosAngeles, AmNat),
+        (Moscow, SovWar),
+        (StPetersburg, SovWar),
+        (Beijing, RedChi),
+        (Shanghai, RedChi),
+        (Tehran, IrLibSyr),
+        (Damascus, IrLibSyr),
+        (Johannesburg, SouthAf),
+        (Lagos, SouthAf),
+        (Delhi, IndPak),
+        (Karachi, IndPak),
+    ]);
+}
 
-    fn points(&self) -> u16 {
-        use Site::*;
-        match self {
-            City { .. } => 15,
-            PowerPlant { .. } => 10,
-            SsTrac { .. } => 10,
-            Submarine { .. } => 5,
-        }
+fn establish_turn_order(query: Query<Entity, With<Player>>, mut turn: ResMut<TurnOrder>) {
+    turn.current = 0;
+    for player in query {
+        turn.players.push(player);
     }
 }
 
-enum Scenario {
-    FlightOfGeese,
-    Explosions,
-    PrinceAlbert,
-    MonitoringStation,
-    Antimissile,
-    BorderDispute,
-    Defcon3,
+fn next_turn(mut turn: ResMut<TurnOrder>) {
+    turn.current = (turn.current + 1) % turn.players.len();
 }
 
-impl Scenario {
-    fn flavor_text(&self) -> &'static str {
-        use Scenario::*;
-        match self {
-            FlightOfGeese => {
-                "AN AMNAT COMPUTRACKER IN THE ALEUTIANS MISREADS A FLIGHT OF GEESE AS THREE SOVWAR SS10S ON REENTRY."
-            }
-            Explosions => {
-                "EXPLOSIONS OF SUSPICIOUS ORIGIN OCCUR AT AMNAT SATELLITE-RECEIVER STATIONS FROM TURKEY TO LABRADOR AS THREE HIGH-LEVEL \
-CANADIAN DEFENSE MINISTERS VANISH AND THEN A COUPLE OF DAYS LATER ARE PHOTOGRAPHED AT A VOLGOGRAD BISTRO HOISTING SHOTS OF STOLICHNAYA WITH SLAVIC BIMBOS ON THEIR KNEE."
-            }
-            PrinceAlbert => {
-                "SOVWAR’S BALD AND PORT-WINE-STAINED PREMIER CALLS AMNAT’S WATTLE-CHINNED PRESIDENT ON THE HOT LINE AND ASKS HIM IF HE’S GOT PRINCE ALBERT IN A CAN."
-            }
-            MonitoringStation => {
-                "ANOTHER PRETTY SHADY EXPLOSION LEVELS A SOVWAR BIG EAR MONITORING STATION ON SAKHALIN."
-            }
-            Antimissile => {
-                "AMNAT IS WITHIN 72 HOURS OF PUTTING AN IMPREGNABLE STRING OF ANTIMISSILE SATELLITES ON LINE."
-            }
-            BorderDispute => "A RUSSO-CHINESE BORDER DISPUTE GOES TACTICAL OVER SINKIANG.",
-            Defcon3 => {
-                "REDCHI GOES TO DEFCON 3, IN RESPONSE TO WHICH SOVWAR AIRFIELDS AND ANTIMISSILE NETWORKS FROM IRKUTSK TO THE DZHUGDZHUR RANGE GO TO DEFCON 5."
-            }
-        }
+fn do_turn(turn: Res<TurnOrder>, factions: Query<&Faction>) {
+    let current_player: &Faction = factions.get(turn.players[turn.current]).unwrap();
+    println!("Current player is {:?}", current_player);
+    println!("Press enter to continue");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).unwrap();
+    if input.trim() == "exit" {
+        std::process::exit(0);
     }
-}
-
-enum Choice {
-    Wait,
-    Attack(Site),
-    Ally(Faction),
-    SacPop,
 }
 
 fn main() {
     println!("Hello, world!");
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .insert_resource(TurnOrder::default())
+        .add_systems(
+            Startup,
+            (
+                populate_players,
+                establish_turn_order.after(populate_players),
+                populate_mamas.after(establish_turn_order),
+            ),
+        )
+        .add_systems(Update, (do_turn, next_turn))
+        .run();
 }
