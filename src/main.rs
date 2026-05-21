@@ -76,6 +76,9 @@ impl Mama {
 struct Polity;
 
 #[derive(Component)]
+struct ActivePolityDisplay;
+
+#[derive(Component)]
 struct Faction(FactionKind);
 
 #[derive(Clone, Copy, Component, PartialEq, Eq, PartialOrd, Ord)]
@@ -180,7 +183,7 @@ fn setup(mut commands: Commands, mut active: ResMut<ActivePolity>, mut order: Re
         .with_child(Faction(FactionKind::Redchi))
         .id();
 
-    order.0.push_back(amnat);
+    // no amnat cause it's already active
     order.0.push_back(sovwar);
     order.0.push_back(redchi);
 
@@ -431,15 +434,75 @@ fn setup_camera_system(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
 
+fn setup_ui(mut commands: Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(10.0),
+                top: Val::Px(10.0),
+                ..default()
+            },
+            ActivePolityDisplay,
+        ))
+        .with_child((
+            Text::new(""),
+            TextFont {
+                font_size: 24.0,
+                ..default()
+            },
+            TextColor(Color::WHITE),
+        ));
+}
+
+fn update_active_polity_display(
+    active: Res<ActivePolity>,
+    polities: Query<&Children, With<Polity>>,
+    factions: Query<&Faction>,
+    display_query: Query<&Children, With<ActivePolityDisplay>>,
+    mut text_query: Query<&mut Text>,
+) {
+    if !active.is_changed() {
+        return;
+    }
+
+    let Ok(children) = polities.get(active.0) else {
+        return;
+    };
+
+    let mut faction_names = Vec::new();
+    for child in children.iter() {
+        if let Ok(faction) = factions.get(child) {
+            faction_names.push(faction.0.to_string());
+        }
+    }
+
+    let display_text = format!("Active: {}", faction_names.join(", "));
+
+    if let Ok(display_children) = display_query.single() {
+        for child in display_children.iter() {
+            if let Ok(mut text) = text_query.get_mut(child) {
+                **text = display_text.clone();
+            }
+        }
+    }
+}
+
 fn main() {
     App::new()
         .add_plugins((DefaultPlugins, ConsolePlugin))
         .insert_resource(ActivePolity(Entity::PLACEHOLDER))
         .insert_resource(TurnOrder::default())
-        .add_systems(Startup, (setup_camera_system, setup))
+        .add_systems(Startup, (setup_camera_system, setup, setup_ui))
         .add_message::<ActionRequested>()
         .add_message::<EndTurn>()
-        .add_systems(Update, (on_action_requested, on_end_turn).chain())
+        .add_systems(
+            Update,
+            (
+                (on_action_requested, on_end_turn).chain(),
+                update_active_polity_display,
+            ),
+        )
         .add_console_command::<WaitCommand, _>(wait_command)
         .add_console_command::<AttackCommand, _>(attack_command)
         .add_console_command::<AllianceCommand, _>(alliance_command)
