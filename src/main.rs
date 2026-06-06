@@ -5,7 +5,11 @@ use std::{
 
 use bevy::{log, prelude::*};
 use bevy_console::{AddConsoleCommand, ConsoleCommand, ConsolePlugin, reply};
+use bevy_prng::WyRand;
+use bevy_rand::{global::GlobalRng, prelude::EntropyPlugin};
 use clap::{Parser, Subcommand, ValueEnum};
+use rand::RngExt;
+use rand_core::Rng;
 
 /// Core structures
 
@@ -96,14 +100,19 @@ impl Warheads {
     fn decrement(&mut self, amount: Warheads) {
         self.0 = self.0 - amount.0
     }
+
+    fn filtered(&self, rand: &mut WyRand) -> Self {
+        let new = (self.0 as f64) * rand.random_range(0.25..0.50);
+        Self(new as u32)
+    }
 }
 
 #[derive(Component)]
 struct Sufddir(u32);
 
 impl Sufddir {
-    fn increment(&mut self) {
-        self.0 += 5;
+    fn increment(&mut self, count: Warheads) {
+        self.0 += 5 * count.0;
     }
 }
 
@@ -111,8 +120,8 @@ impl Sufddir {
 struct Inddir(u32);
 
 impl Inddir {
-    fn increment(&mut self) {
-        self.0 += 5;
+    fn increment(&mut self, count: Warheads) {
+        self.0 += 5 * count.0;
     }
 }
 
@@ -162,6 +171,26 @@ struct TurnOrder(VecDeque<Entity>);
 
 #[derive(Resource)]
 struct FactionPolities(HashMap<FactionKind, Entity>);
+
+#[derive(Default, Resource)]
+struct Aggressions(HashMap<FactionKind, Vec<FactionKind>>);
+
+impl Aggressions {
+    fn get(&self, faction: FactionKind) -> &[FactionKind] {
+        if let Some(vals) = self.0.get(&faction) {
+            vals.as_slice()
+        } else {
+            &[]
+        }
+    }
+
+    fn record(&mut self, from: FactionKind, to: FactionKind) {
+        self.0
+            .entry(from)
+            .and_modify(|vec| vec.push(to))
+            .or_insert(vec![to]);
+    }
+}
 
 /// Systems
 
@@ -217,17 +246,18 @@ fn on_action_requested(
     mut actions: MessageReader<ActionRequested>,
     mut end_turn: MessageWriter<EndTurn>,
     mut mamas: Query<(Entity, &Mama, &Faction, &mut Damage, &mut Destroyed)>,
-    mut polities: Query<(Entity, &Children, &mut Sufddir, &mut Inddir), With<Polity>>,
+    mut polities: Query<
+        (Entity, &Children, &mut Sufddir, &mut Inddir, &mut Warheads),
+        With<Polity>,
+    >,
     faction_polities: Res<FactionPolities>,
     active: Res<ActivePolity>,
+    mut rng: Single<&mut WyRand, With<GlobalRng>>,
 ) {
     for action in actions.read() {
         match action {
             ActionRequested::Attack(attack_target) => match attack_target {
-                AttackTarget::Mama {
-                    target,
-                    warheads: _,
-                } => {
+                AttackTarget::Mama { target, warheads } => {
                     let Some((_entity, _mama, faction, mut damage, mut destroyed)) =
                         mamas.iter_mut().find(|(_, m, _, _, _)| **m == *target)
                     else {
@@ -237,6 +267,15 @@ fn on_action_requested(
 
                     if destroyed.0 {
                         log::info!("can't fire at destroyed target");
+                        return;
+                    }
+
+                    let mut stockpile = polities.get_mut(active.0).unwrap().4;
+                    stockpile.decrement(Warheads(*warheads));
+                    let warheads_that_hit = Warheads(*warheads).filtered(rng.as_mut());
+
+                    if warheads_that_hit.0 == 0 {
+                        log::info!("no hits");
                         return;
                     }
 
@@ -252,10 +291,10 @@ fn on_action_requested(
                         .expect("couldn't find polity for faction");
 
                     let mut sufddir = polities.get_mut(target_polity_entity).unwrap().2;
-                    sufddir.increment();
+                    sufddir.increment(warheads_that_hit);
 
                     let mut inddir = polities.get_mut(active.0).unwrap().3;
-                    inddir.increment();
+                    inddir.increment(warheads_that_hit);
                 }
                 AttackTarget::Satcom { warheads } => log::error!("satcom attack unimplemented"),
                 AttackTarget::Powerplant { warheads } => {
@@ -364,7 +403,7 @@ fn attack_command(
     mut log: ConsoleCommand<AttackCommand>,
     mut actions: MessageWriter<ActionRequested>,
     active: Res<ActivePolity>,
-    mut warheads: Query<&mut Warheads, With<Polity>>,
+    warheads: Query<&Warheads, With<Polity>>,
 ) {
     if let Some(Ok(cmd)) = log.take() {
         let active_warheads = *warheads.get(active.0).unwrap();
@@ -375,8 +414,6 @@ fn attack_command(
             reply!(log, "Too many warheads, you may only use {}", budget.0)
         } else {
             reply!(log, "{:?}", cmd);
-            let mut hdl = warheads.get_mut(active.0).unwrap();
-            hdl.decrement(cmd.target.warheads());
             actions.write(ActionRequested::Attack(cmd.target));
         }
     }
@@ -490,9 +527,14 @@ fn update_active_polity_display(
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, ConsolePlugin))
+        .add_plugins((
+            DefaultPlugins,
+            ConsolePlugin,
+            EntropyPlugin::<WyRand>::default(),
+        ))
         .insert_resource(ActivePolity(Entity::PLACEHOLDER))
         .insert_resource(TurnOrder::default())
+        .insert_resource(Aggressions::default())
         .add_systems(Startup, (setup_camera_system, setup, setup_ui))
         .add_message::<ActionRequested>()
         .add_message::<EndTurn>()
